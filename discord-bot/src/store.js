@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { ROLE_INFO } from '../../shared/roles.js';
 
 // One bot process owns this file. Persist before revealing roles; never silently
 // discard unreadable state, since players may already have received their roles.
@@ -15,11 +16,16 @@ export class GameStore {
       }
       this.games = saved.games;
       let migrated = false;
-      // Saved games from before Fool was introduced keep all assignments intact.
+      // New optional roles default to zero in saved setups. Preserve existing
+      // counts and all private assignments, including games already started.
       for (const game of Object.values(this.games)) {
-        if (game.config?.counts && !Object.hasOwn(game.config.counts, 'Fool')) {
-          game.config.counts.Fool = 0;
-          migrated = true;
+        if (game.config?.counts) {
+          for (const role of Object.keys(ROLE_INFO)) {
+            if (!Object.hasOwn(game.config.counts, role)) {
+              game.config.counts[role] = 0;
+              migrated = true;
+            }
+          }
         }
         // Old games lack creation times: use their start time if known,
         // otherwise start a one-minute grace period and persist it once.

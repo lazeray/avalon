@@ -3,6 +3,9 @@ import { ROLE_INFO, totals, validateConfig } from './roles.js';
 
 export function startingInformation(me, players) {
   if (!me.role) return null;
+  const edmunds = players.filter(p => p.role === 'Edmund');
+  // Resolve saved targets only; reads must never choose or reroll a frame.
+  const framedPlayers = edmunds.map(edmund => framedPlayer(edmund, players));
   let visible = [];
   let heading = 'No players revealed';
   let explanation = 'Your role gives you no information about other players.';
@@ -11,10 +14,13 @@ export function startingInformation(me, players) {
       if (!Array.isArray(me.foolSeenIds)) throw new Error('Missing saved Fool information.');
       visible = players.filter(p => me.foolSeenIds.includes(p.id));
     } else {
-      visible = players.filter(p => ROLE_INFO[p.role].team === 'Spy' && p.role !== 'Mordred');
+      const framedIds = new Set(framedPlayers.filter(Boolean).map(p => p.id));
+      visible = players.filter(p => (ROLE_INFO[p.role].team === 'Spy' && p.role !== 'Mordred') || framedIds.has(p.id));
     }
     heading = 'Known spies';
     explanation = 'Mordred is hidden from you. These players are spies; their exact roles are not revealed.';
+    // Give Fool exactly the same text as Merlin; framing must not reveal its disguise.
+    if (edmunds.length) explanation = 'Mordred is hidden from you. These players appear as spies; some may be framed Resistance players. Exact roles are not revealed.';
   } else if (me.role === 'Percival') {
     visible = players.filter(p => p.role === 'Merlin' || p.role === 'Morgana');
     heading = 'Possible Merlins';
@@ -37,9 +43,29 @@ export function startingInformation(me, players) {
     visible = players.filter(p => p.id !== me.id && ROLE_INFO[p.role].team === 'Spy' && p.role !== 'Oberon');
     heading = 'Known spy teammates';
     explanation = 'Oberon is hidden from your team. Exact teammate roles are not revealed.';
+    if (me.role === 'Edmund') {
+      const target = framedPlayer(me, players);
+      // Keep the framed good player out of the spy-teammate list: existing clients
+      // use that list to mark spies. Seat and ID identify the frame in both clients.
+      explanation += target
+        ? ` You framed the player in seat ${players.findIndex(p => p.id === target.id) + 1} (ID: ${target.id}). They remain Resistance but appear as a spy to Merlin. They are not a spy teammate.`
+        : ' No Resistance player exists, so you framed nobody.';
+      return { heading, explanation, players: visible.map(p => ({ id: p.id, name: p.name })),
+        framedPlayer: target ? { id: target.id, name: target.name } : null };
+    }
   }
   // Preserve public seat order, never group or sort candidates by their hidden roles.
   return { heading, explanation, players: visible.map(p => ({ id: p.id, name: p.name })) };
+}
+
+function framedPlayer(edmund, players) {
+  if (!Object.hasOwn(edmund, 'edmundTargetId')) throw new Error('Missing saved Edmund information.');
+  if (edmund.edmundTargetId === null) return null;
+  const target = players.find(p => p.id === edmund.edmundTargetId);
+  if (!target || ROLE_INFO[target.role]?.team !== 'Resistance') {
+    throw new Error('Invalid saved Edmund target.');
+  }
+  return target;
 }
 
 export function assignRoles(players, config) {
@@ -78,11 +104,29 @@ export function randomPlayerIds(players, excludedId, count) {
   return candidates.slice(0, count).map(player => player.id);
 }
 
-// Draw once, after roles are final. Store IDs privately; never reroll on a read.
+// Draw once, after roles are final. Each Edmund draws independently; multiple
+// Edmunds may frame the same player. No eligible player means no frame (null).
+// Any Resistance role is eligible, including Merlin (who then sees themself).
+export function assignEdmundKnowledge(players) {
+  const candidates = players.filter(p => ROLE_INFO[p.role].team === 'Resistance');
+  for (const player of players) {
+    delete player.edmundTargetId;
+    if (player.role === 'Edmund') {
+      player.edmundTargetId = candidates.length ? candidates[randomInt(candidates.length)].id : null;
+    }
+  }
+}
+
+// Existing clients call this after finalizing roles (including demo role swaps).
+// Keep that entry point and finalize both kinds of private random knowledge here.
+// Never call it while reading information, retrying DMs, or reconnecting a player.
 export function assignFoolKnowledge(players) {
+  assignEdmundKnowledge(players);
   const spyCount = players.filter(p => ROLE_INFO[p.role].team === 'Spy').length;
+  const edmundCount = players.filter(p => p.role === 'Edmund').length;
+  const revealCount = Math.min(spyCount + edmundCount, Math.max(0, players.length - 1));
   for (const player of players) {
     delete player.foolSeenIds;
-    if (player.role === 'Fool') player.foolSeenIds = randomPlayerIds(players, player.id, spyCount);
+    if (player.role === 'Fool') player.foolSeenIds = randomPlayerIds(players, player.id, revealCount);
   }
 }

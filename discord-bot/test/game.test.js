@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GameStore } from '../src/store.js';
+import { setupMessage, setupPages } from '../src/presentation.js';
 import { BotGames, roleMessage } from '../src/game.js';
 import { emptyCounts, preset } from '../../shared/roles.js';
 
@@ -293,4 +294,52 @@ test('startup migrates every saved guild in a single write and skips writes on t
   const restored = new CountingStore(f.file);
   assert.equal(writes, 1);
   assert.deepEqual(restored.all(), migrated.all());
+});
+
+test('pre-Edmund lobbies gain zero counts and can be edited and started without resetting setup', async t => {
+  const f = fixture(t, { disk: true });
+  await f.full();
+  const config = { mode: 'custom', counts: { ...emptyCounts(), Resistance: 3, Merlin: 1, Fool: 1, Spy: 1 } };
+  await f.act('setup', '0', config);
+  const before = f.store.get('guild');
+  const legacy = JSON.parse(readFileSync(f.file, 'utf8'));
+  delete legacy.games.guild.config.counts.Edmund;
+  writeFileSync(f.file, JSON.stringify(legacy));
+  const recovered = new BotGames({ store: new GameStore(f.file), sendDM: f.sendDM });
+  const game = recovered.requireGame('guild');
+  assert.deepEqual(game, before);
+  assert.deepEqual(new GameStore(f.file).get('guild'), before);
+  const pages = setupPages().map((_, page) => JSON.stringify(setupMessage(game, null, page)));
+  assert.ok(pages.some(page => page.includes('### Edmund: 0')));
+  assert.ok(pages.every(page => !page.includes('undefined')));
+  // The migrated zero makes the existing +/- editor's arithmetic valid.
+  const edited = structuredClone(game.config);
+  edited.counts.Edmund++;
+  edited.counts.Spy--;
+  recovered.setup(game, '0', edited);
+  const started = await recovered.start(recovered.requireGame('guild'), '0');
+  assert.equal(started.players.filter(p => p.role === 'Edmund').length, 1);
+  assert.equal(started.createdAt, before.createdAt);
+  assert.equal(started.delivered.length, 6);
+});
+
+test('pre-Edmund started games retain roles, Fool knowledge, and pending DMs after migration', async t => {
+  const f = fixture(t, { disk: true });
+  await f.full();
+  await f.act('setup', '0', { mode: 'custom', counts: { ...emptyCounts(), Resistance: 3, Merlin: 1, Fool: 1, Spy: 1 } });
+  f.blocked.add('2');
+  const before = await f.act('start', '0');
+  const legacy = JSON.parse(readFileSync(f.file, 'utf8'));
+  delete legacy.games.guild.config.counts.Edmund;
+  writeFileSync(f.file, JSON.stringify(legacy));
+  const recovered = new BotGames({ store: new GameStore(f.file), sendDM: f.sendDM });
+  assert.deepEqual(recovered.requireGame('guild'), before);
+  const count = f.messages.length;
+  f.blocked.clear();
+  const retried = await recovered.retry(recovered.requireGame('guild'), '0');
+  assert.deepEqual(retried.players, before.players);
+  assert.equal(retried.createdAt, before.createdAt);
+  assert.equal(retried.startedAt, before.startedAt);
+  assert.equal(f.messages.length, count + 1);
+  assert.equal(f.messages.at(-1).content, roleMessage(before, before.players.find(p => p.id === '2')));
 });

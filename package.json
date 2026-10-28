@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node web/server.js",
-    "test": "node --test web/test/*.test.js discord-bot/test/*.test.js",
+    "test": "node --test web/test/*.test.js discord-bot/test/*.test.js shared/*.test.js",
     "start:bot": "npm --prefix discord-bot start"
   },
   "engines": {
